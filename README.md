@@ -1,5 +1,5 @@
 # StepTP
 
-The main code to construct the dataset is available.
+The main code to construct the dataset and the chat-template dataset is available.
 
-The dataset will be released after the paper is receieved.
+The dictionary dataset for archival will be released after the paper is receieved.
