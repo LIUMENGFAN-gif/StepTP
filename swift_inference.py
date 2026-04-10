@@ -54,7 +54,7 @@ if __name__ == '__main__':
     infer_backend = 'pt'
     stream = True
     # Get model and template, and load LoRA weights.
-    engine = PtEngine(model_id_or_path, model_type="qwen3", adapters=[last_model_checkpoint])
+    engine = PtEngine(model_id_or_path, model_type="qwen3", adapters=[last_model_checkpoint], max_batch_size=args.batch_size)
     template = get_template(engine.model_meta.template, engine.processor, default_system=system)
     # You can modify the `default_template` directly here, or pass it in during `engine.infer`.
     engine.default_template = template
