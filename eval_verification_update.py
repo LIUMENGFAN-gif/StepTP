@@ -17,7 +17,8 @@ def initial_time_record(tvm_time_record_dir, idx, tvm_time, pytorch_time, atol, 
         f.write('\n')
 
 def obtain_store_dict(info):
-    model_name=info[len('../nfs_folder/dataset/'):info.index('_original')]
+    base_name = os.path.basename(info)
+    model_name=base_name[:base_name.index('_original')]
     with gzip.open(info, "rb") as f:
         store_dict = pickle.load(f)
     return store_dict, model_name
