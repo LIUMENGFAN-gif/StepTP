@@ -136,7 +136,7 @@ The verification scripts require the corresponding store-dictionary files. These
 ## Notes for Reproducibility
 
 - The included `dataset.zip` is sufficient for training with `swift_Qwen.py`.
-- End-to-end reconstruction of the full dataset requires the archival dictionary dataset and intermediate artifacts, which will be released after acceptance.
+- The archival dictionary dataset with multiple IRs will be released after acceptance.
 - Single-step and multi-step inference/evaluation can be run with user-created evaluation prompts and locally generated store-dictionary files; the paper evaluation files will be released after acceptance.
 - The TVM verification scripts require CUDA-enabled and LLVM-enabled TVM and access to the store dictionaries referenced by each data entry.
 - Some inference and optimization scripts use hard-coded author-side paths; update these paths before running them in a new environment.
