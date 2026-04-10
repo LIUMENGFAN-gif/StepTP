@@ -7,6 +7,7 @@ import numpy as np
 from torch.fx import symbolic_trace
 from torch.fx.passes.shape_prop import ShapeProp
 import inspect
+import torch
 
 related_info_pattern=[r'\^{[^}]+}\_{(?:[^{}]+|{(?:[^{}]+|{[^{}]*})*})*}', r'\_{(?:[^{}]+|{(?:[^{}]+|{[^{}]*})*})*}\^{[^}]+}', r'\^{[^}]+}']
 single_pattern=[r'\_{(?:[^{}]+|{(?:[^{}]+|{[^{}]*})*})*}', r'\^{[^}]+}']
@@ -87,18 +88,18 @@ def generate_subscript_details(subscript):
         elif var=='}':
             right_num += 1
         if var==',' and '{' not in single_subscript and single_subscript.replace(',', '')!='':#normal lower case
-            subscript_details.append(single_subscript.replace(',', ''))
+            subscript_details.append(single_subscript.replace(',', '').strip())
             single_subscript=''
         if var_idx==len(subscript)-2:#last string
             if '{' not in single_subscript and single_subscript.replace(',', '')!='':
-                subscript_details.append(single_subscript.replace(',', ''))
+                subscript_details.append(single_subscript.replace(',', '').strip())
             elif '{' in single_subscript and single_subscript!='':
-                subscript_details.append(single_subscript)
+                subscript_details.append(single_subscript.strip())
             single_subscript=''
         if (left_num == right_num) and (left_num > 0):
             # if (('_' in single_subscript) or (var_idx!=len(subscript)-2 and subscript[var_idx+1]!='_' and subscript[var_idx+1]==',')) and single_subscript!='':
             if (var_idx!=len(subscript)-2 and subscript[var_idx+1]==',') and ('_' in single_subscript or subscript[var_idx+1]!='_' ) and single_subscript!='':
-                subscript_details.append(single_subscript)
+                subscript_details.append(single_subscript.strip())
                 single_subscript = ''
                 left_num, right_num = 0, 0
             elif var_idx!=len(subscript)-2 and subscript[var_idx+1]=='_':
@@ -222,7 +223,7 @@ def find_var_info_in_previous_ir(previous_ir_list, var_subscript):
     # print(f'final shape:{shape}')
     return shape
 
-def convert_shape(subscript_list, ir_split, name, previous_ir):
+def convert_shape(subscript_list, ir_split, name, previous_ir, shape_correct, known_names, known_shapes):
     len_shape=-1
     shape_list=[]
     correct=True
@@ -232,19 +233,32 @@ def convert_shape(subscript_list, ir_split, name, previous_ir):
         non_var_idx_list=[idx for idx in range(len(subscript_details)) if '^' not in subscript_details[idx]]
         var_idx_list=[idx for idx in range(len(subscript_details)) if '^' in subscript_details[idx]]
         final_shape_list=[-1]*len(subscript_details)
+        # print(f'var_idx_list:{var_idx_list}, previous_ir:{previous_ir}')
         if len(non_var_idx_list)>0:
             non_var_subscript_details=[subscript_details[idx] for idx in non_var_idx_list]
             non_var_list=generate_non_var_subscript_details(non_var_subscript_details)
             non_var_shape_list=generate_one_shape(non_var_list, non_var_subscript_details, name, ir_split)
-            # print(f'non_var_shape: {non_var_shape_list}')
             for non_var_idx in range(len(non_var_idx_list)):
                 final_shape_list[non_var_idx_list[non_var_idx]]=non_var_shape_list[non_var_idx]
         if len(var_idx_list)>0:
             var_subscript_details=[subscript_details[idx] for idx in var_idx_list]
+            # print(f'var_subscript_details:{var_subscript_details}')
             for var_subscript_idx in range(len(var_subscript_details)):
                 var_subscript=var_subscript_details[var_subscript_idx]
-                var_shape=find_var_info_in_previous_ir(previous_ir, var_subscript)
-                final_shape_list[var_idx_list[var_subscript_idx]]=var_shape
+                # print(f'var_subscript:{var_subscript}')
+                if var_subscript[:var_subscript.index('^')] in known_names:
+                    # print(f'var_subscript in known names:{var_subscript}')
+                    name=var_subscript[:var_subscript.index('^')]
+                    var_superscript_list= list(set(re.findall(rf'{name}({superscript_pattern})', ir_split)))
+                    var_subscript_list= find_subscripts_of_intermediate_vars(name, var_superscript_list[0], ir_split)
+                    # print(f'var_superscript_list in known names:{var_superscript_list}, var_subscript_list:{var_subscript_list}')
+                    var_shape, shape_correct=convert_shape(var_subscript_list, ir_split, name, previous_ir, shape_correct, known_names, known_shapes)
+                    # print(f'var_shape in known names:{var_shape}')
+                    final_shape_list[var_idx_list[var_subscript_idx]]=var_shape[0]
+                    # print(f'final_shape_list[var_idx_list[var_subscript_idx]]:{final_shape_list[var_idx_list[var_subscript_idx]]}, shape_correct:{shape_correct}')
+                else:
+                    var_shape=find_var_info_in_previous_ir(previous_ir, var_subscript)
+                    final_shape_list[var_idx_list[var_subscript_idx]]=var_shape
         if len_shape==-1:
             len_shape=len(final_shape_list)
             shape_list=final_shape_list.copy()
@@ -255,23 +269,53 @@ def convert_shape(subscript_list, ir_split, name, previous_ir):
                 shape_list=final_shape_list.copy()
             else:
                 shape_list=[a+b for a, b in zip(shape_list, final_shape_list)]
-    return shape_list, correct
+    # print(f'correct:{correct}, correct and shape_correct:{correct and shape_correct}')
+    return shape_list, correct and shape_correct
 
 def split_ir(ir):
+    if '[' in ir and ']' in ir:
+        ir_split=[]
+        left_num, right_num = 0, 0
+        single_split=''
+        for var in ir:
+            if var=='[':
+                left_num += 1
+            elif var==']':
+                right_num += 1
+            single_split += var
+            if left_num == right_num and left_num > 0 and var==';':
+                ir_split.append(single_split)
+                single_split = ''
+                left_num, right_num = 0, 0
+        return ir_split
+    else:
+        return ir.split(';')
+
+def split_ir_var(ir):
     ir_split=[]
-    left_num, right_num = 0, 0
-    single_split=''
-    for var in ir:
-        if var=='[':
-            left_num += 1
-        elif var==']':
-            right_num += 1
-        single_split += var
-        if left_num == right_num and left_num > 0 and var==';':
-            ir_split.append(single_split)
-            single_split = ''
-            left_num, right_num = 0, 0
-    return ir_split
+    if '[' in ir and ']' in ir:
+        index_bracket=ir.index('[')
+        index_semicolon=ir.index(';')
+        while index_semicolon<index_bracket:
+            ir_split.append(ir[:index_semicolon])
+            ir=ir[index_semicolon+1:]
+            index_bracket=ir.index('[')
+            index_semicolon=ir.index(';')
+        left_num, right_num = 0, 0
+        single_split=''
+        for var in ir:
+            if var=='[':
+                left_num += 1
+            elif var==']':
+                right_num += 1
+            single_split += var
+            if left_num == right_num and left_num > 0 and var==';':
+                ir_split.append(single_split)
+                single_split = ''
+                left_num, right_num = 0, 0
+        return ir_split
+    else:
+        return ir.split(';')
 
 def check_intermediate_vars(ir_split, inter_names):
     inter_names_in_this_split=[]
@@ -294,30 +338,6 @@ def add_inter_allocation(inter_dict, tab_num, inter_names_in_this_split):
             inter_dict[name]['update']=False
     return inter_string_list, inter_string_name, inter_string_shape
 
-# def handle_intermediate_vars(ir_split, inter_names, inter_dict, previous_ir, tab_num):
-#     inter_names_in_this_split=check_intermediate_vars(ir_split, inter_names)
-#     # print(f'ir_split:{ir_split},inter_names_in_this_split:{inter_names_in_this_split}')
-#     shape_correct=True
-#     for name in inter_names_in_this_split:
-#         superscript_list= list(set(re.findall(rf'{name}({superscript_pattern})', ir_split)))
-#         subscript_list= find_subscripts_of_intermediate_vars(name, superscript_list[0], ir_split)
-#         # print(f'name: {name}, superscript_list: {superscript_list}, subscript_list: {subscript_list}')
-#         shape_list, shape_correct=convert_shape(subscript_list, ir_split, name, previous_ir)  
-#         # print(f'shape_list: {shape_list}')
-#         dtype_and_cache_index=superscript_list[0].replace('{','').replace('}','').replace('^','').split(',')
-#         dtype=convert_dtype([dtype_and_cache_index[0]])[0]
-#         cache=convert_cache(dtype_and_cache_index[1])
-#         # print(f'dtype: {dtype}, cache: {cache}')
-#         new_key_dict={'shape': shape_list, 'dtype':dtype, 'cache_location': cache, 'update': True}
-#         if name not in inter_dict.keys():
-#             inter_dict[name]=new_key_dict
-#         else:
-#             key_dict=inter_dict[name]
-#             if shape_list!=key_dict['shape'] or dtype!=key_dict['dtype'] or cache!=key_dict['cache_location']:
-#                 inter_dict[name]=new_key_dict
-#     inter_string=add_inter_allocation(inter_dict, tab_num, inter_names_in_this_split)
-#     return inter_dict, inter_string, shape_correct
-
 def update_ir_split(temp_ir_split, full_name):
     name_start_idx=temp_ir_split.index(full_name)
     name_end_idx=name_start_idx+len(full_name)
@@ -335,39 +355,206 @@ def update_ir_split(temp_ir_split, full_name):
         temp_ir_split=temp_ir_split[:name_start_idx]+temp_ir_split[this_eq_end_idx+1:]
     return temp_ir_split
 
-def handle_intermediate_vars(ir_split, inter_names, inter_dict, previous_ir, tab_num):
+
+def sub_handle_loop_equation_nest(ir_split):
+    if '[' not in ir_split or len(ir_split[:ir_split.index('[')])==0:
+        eq=ir_split.replace('[','').replace('];','')
+        return eq, '', True
+    else:
+        most_outer_loop=ir_split[:ir_split.index('[')]
+        most_outer_equation=ir_split[ir_split.index('[')+1:-2]
+        return most_outer_equation, most_outer_loop, False
+
+def obtain_sub_equation_list(sub_equation):
+    sub_equation_list=split_ir_var(sub_equation)
+    test_sub_equation=sub_equation
+    oldlen_sub_equation_list, newlen_sub_equation_list=len(sub_equation_list),0
+    while len(test_sub_equation)>0 and len(test_sub_equation.replace(';',''))>0 and oldlen_sub_equation_list!=newlen_sub_equation_list:
+        newlen_sub_equation_list=len(sub_equation_list)
+        for item in sub_equation_list:
+            test_sub_equation=test_sub_equation.replace(item, '')
+        if len(test_sub_equation)>0:
+            sub_equation_list.extend(split_ir_var(test_sub_equation))
+        oldlen_sub_equation_list=len(sub_equation_list)
+        # print(f'test_sub_equation:{test_sub_equation}, sub_equation_list:{sub_equation_list}, oldlen_sub_equation_list:{oldlen_sub_equation_list}, newlen_sub_equation_list:{newlen_sub_equation_list}\n')
+    # print(f'sub_equation_list:{sub_equation_list}\n')
+    return sub_equation_list
+    
+
+def handle_loop_equation_nest(ir_split):
+    dict_eq_loop={}
+    # print('-----------start--------')
+    most_outer_equation, most_outer_loop, is_end=sub_handle_loop_equation_nest(ir_split)
+    if not is_end:
+        # most_outer_equation_list=split_ir_var(most_outer_equation)
+        most_outer_equation_list=obtain_sub_equation_list(most_outer_equation)
+        most_outer_equation_list=[[item, [most_outer_loop]] for item in most_outer_equation_list if ''!=item]
+        while len(most_outer_equation_list)>0:
+            sub_ir_split, sub_loop_list=most_outer_equation_list.pop(0)
+            sub_equation, sub_loop, is_end=sub_handle_loop_equation_nest(sub_ir_split)
+            # print(f'sub_ir_split:{sub_ir_split}, sub_equation:{sub_equation}\n')
+            if not is_end:
+                new_sub_loop_list=sub_loop_list.copy()
+                new_sub_loop_list.append(sub_loop)
+                sub_equation_list=obtain_sub_equation_list(sub_equation)
+                sub_equation_list=[[item, new_sub_loop_list] for item in sub_equation_list if item!='']
+                # print(f'sub_equation_list:{sub_equation_list}\n')
+                most_outer_equation_list.extend(sub_equation_list)
+            else:
+                dict_eq_loop[sub_equation]=sub_loop_list.copy()
+    else:
+        dict_eq_loop[most_outer_equation]=[]
+    return dict_eq_loop
+
+def analyze_full_real_loop_list(full_loop_list):
+    loop_notation=[]
+    for item in full_loop_list:
+        for c in item:
+            if c in 'LPVBU':
+                if len(loop_notation)>0 and c=='L' and loop_notation[-1]=='L':
+                    pass
+                else:
+                    loop_notation.append(c)
+    return len(loop_notation)
+
+def obtain_temp_tab_num(full_loop_list, real_loop_list):
+    # print(f'full_loop_list:{analyze_full_real_loop_list(full_loop_list)}, real_loop_list:{analyze_full_real_loop_list(real_loop_list)}')
+    # num=sum(item.count(c) for item in full_loop_list for c in 'LPVBU')-sum(item.count(c) for item in real_loop_list for c in 'LPVBU')
+    num=analyze_full_real_loop_list(full_loop_list)-analyze_full_real_loop_list(real_loop_list)
+    # print(f'num:{num}')
+    return num
+
+def handle_loop_nest_and_order(ir_split):
+    list_eq_loops=[] #each item: [eq, [full loops], [real loops]]
+    most_outer_equation, most_outer_loop, is_end=sub_handle_loop_equation_nest(ir_split)
+    # print(f'most_outer_equation:{most_outer_equation}, most_outer_loop:{most_outer_loop}\n')
+    whole_loop_list={0:most_outer_loop}
+    loop_idx_list=[0]
+    last_loop_idx=0
+    if not is_end:
+        # most_outer_equation_list=split_ir_var(most_outer_equation)
+        most_outer_equation_list=obtain_sub_equation_list(most_outer_equation)
+        most_outer_equation_list=[[item, [most_outer_loop], [0]] for item in most_outer_equation_list if item!='']
+        # print(f'most_outer_equation_list:{most_outer_equation_list}')
+        while len(most_outer_equation_list)>0:
+            sub_ir_split, sub_loop_list, sub_loop_idx_list=most_outer_equation_list.pop(0)
+            sub_equation, sub_loop, is_end=sub_handle_loop_equation_nest(sub_ir_split)
+            if not is_end:
+                new_sub_loop_list=sub_loop_list.copy()
+                new_sub_loop_list.append(sub_loop)
+                new_sub_loop_idx_list=sub_loop_idx_list.copy()
+                last_loop_idx=last_loop_idx+1
+                new_sub_loop_idx_list.append(last_loop_idx)
+                whole_loop_list[last_loop_idx]=sub_loop
+                loop_idx_list.append(last_loop_idx)
+                sub_equation_list=obtain_sub_equation_list(sub_equation)
+                # if '' in sub_equation_list: sub_equation_list.remove('')
+                sub_equation_list=[[item, new_sub_loop_list, new_sub_loop_idx_list] for item in sub_equation_list if item!='']
+                most_outer_equation_list=sub_equation_list+most_outer_equation_list
+            else:
+                #real_loop_list
+                real_loop_list=[]
+                for loop_idx in sub_loop_idx_list:
+                    if loop_idx in loop_idx_list:
+                        real_loop_list.append(whole_loop_list[loop_idx])
+                        loop_idx_list.remove(loop_idx)
+                list_eq_loops.append([sub_equation.replace(';',''), sub_loop_list.copy(), real_loop_list])
+    else:
+        list_eq_loops.append([most_outer_equation.replace(';',''), [], []])
+    return list_eq_loops
+
+
+def check_input_list(ir_split, inter_names, inter_dict, previous_ir, known_names, known_shapes):
+    dict_eq_loop=handle_loop_equation_nest(ir_split)
+    # print(f'dict_eq_loop:{dict_eq_loop}\ninter_names:{inter_names}\n')
+    # print(f'inter_dict:{inter_dict}')
+    inter_names_in_whole_split=[]
     #delete all loops
-    no_loop_ir_split=re.sub(r'[LPVUB]\^{[\d]+}\_{.*?=[\d]+}','',ir_split)
-    eqs=no_loop_ir_split.split(';')
-    output_list=[item.split('=')[0] for item in eqs if '^' in item.split('=')[0]]
-    inter_names_in_this_split=[]
-    for output_item in output_list:
-        inter_names_in_this_split.extend(check_intermediate_vars(output_item, inter_names))
-    # print(f'output:{output_list}, no_loop_ir_split:{no_loop_ir_split}, inter_names_in_this_split:{inter_names_in_this_split}')
-    # print(f'ir_split:{ir_split},inter_names_in_this_split:{inter_names_in_this_split}')
-    shape_correct=True
-    temp_ir_split=ir_split
-    for name in inter_names_in_this_split:
-        superscript_list= list(set(re.findall(rf'{name}({superscript_pattern})', temp_ir_split)))
-        subscript_list= find_subscripts_of_intermediate_vars(name, superscript_list[0], temp_ir_split)
-        # print(f'name: {name}, superscript_list: {superscript_list}, subscript_list: {subscript_list},temp_ir_split:{temp_ir_split}')
-        shape_list, shape_correct=convert_shape(subscript_list, temp_ir_split, name, previous_ir)
-        full_name=name+superscript_list[0]+subscript_list[0] if len(subscript_list)>0 else name+superscript_list[0]
-        temp_ir_split=update_ir_split(temp_ir_split, full_name)
-        # print(f'shape_list: {shape_list}')
-        dtype_and_cache_index=superscript_list[0].replace('{','').replace('}','').replace('^','').split(',')
-        dtype=convert_dtype([dtype_and_cache_index[0]])[0]
-        cache=convert_cache(dtype_and_cache_index[1])
-        # print(f'dtype: {dtype}, cache: {cache}')
-        new_key_dict={'shape': shape_list, 'dtype':dtype, 'cache_location': cache, 'update': True}
-        if name not in inter_dict.keys():
-            inter_dict[name]=new_key_dict
-        else:
-            key_dict=inter_dict[name]
-            if shape_list!=key_dict['shape'] or dtype!=key_dict['dtype'] or cache!=key_dict['cache_location']:
+    for key in dict_eq_loop.keys():
+        loop_list=dict_eq_loop[key]
+        eqs=[key.replace(';','')]
+        # print(f'eqs:{eqs}\n')
+        output_list=[item.split('=')[0] for item in eqs if '^' in item.split('=')[0]]
+        eq_right='='.join(eqs[0].split('=')[1:])
+        # print(f'eq_right:{eq_right}, inter_names:{inter_names}')
+        inter_names_in_this_split=[]
+        for output_item in output_list:
+            inter_names_in_this_split.extend(check_intermediate_vars(output_item, inter_names))
+        inter_names_in_whole_split.extend(inter_names_in_this_split)
+        input_list=[name for name in inter_names if name not in inter_names_in_this_split and name+'^{' in eq_right]
+        shape_correct=True
+        temp_ir_split=''.join(loop_list)+'['+key.replace(';','')+';];'
+        #check input shape
+        for input_name in input_list:
+            # print(f'input_name:{input_name}, temp_ir_split:{temp_ir_split}\n')
+            superscript_list= list(set(re.findall(rf'{input_name}({superscript_pattern})', temp_ir_split)))
+            subscript_list= find_subscripts_of_intermediate_vars(input_name, superscript_list[0], temp_ir_split)
+            # print(f'subscript_list:{subscript_list}')
+            input_shape_list, shape_correct=convert_shape(subscript_list, temp_ir_split, input_name, previous_ir, shape_correct, known_names, known_shapes)
+            input_shape_in_dict=inter_dict[input_name]['shape']
+            # print(f'input_name:{input_name}, input_shape_list:{input_shape_list}, shape_correct:{shape_correct}, input_shape_in_dict:{input_shape_in_dict}')
+            if len(input_shape_list)==len(input_shape_in_dict):
+                if len(input_shape_list)>0:
+                    for idx in range(len(input_shape_list)):
+                        if input_shape_list[idx]>input_shape_in_dict[idx]:
+                            shape_correct=False
+                            break
+            else:
+                shape_correct=False
+    return shape_correct
+
+def handle_intermediate_vars(ir_split, output_name, inter_names, inter_dict, previous_ir, known_names, known_shapes, tab_num):
+    # print("---------------------------start inter...-------------------------")
+    dict_eq_loop=handle_loop_equation_nest(ir_split)
+    # print(f'dict_eq_loop:{dict_eq_loop}\ninter_names:{inter_names}\n')
+    # print(f'inter_dict:{inter_dict}')
+    inter_names_in_whole_split=[]
+    output_shape_list=[]
+    #delete all loops
+    for key in dict_eq_loop.keys():
+        loop_list=dict_eq_loop[key]
+        eqs=[key.replace(';','')]
+        # print(f'eqs:{eqs}\n')
+        output_list=[item.split('=')[0] for item in eqs if '^' in item.split('=')[0]]
+        inter_names_in_this_split=[]
+        for output_item in output_list:
+            inter_names_in_this_split.extend(check_intermediate_vars(output_item, inter_names))
+        inter_names_in_whole_split.extend(inter_names_in_this_split)
+        shape_correct=True
+        temp_ir_split=''.join(loop_list)+'['+key.replace(';','')+';];'
+        # print(f'output:{output_list}, eqs:{eqs}, inter_names_in_this_split:{inter_names_in_this_split}\n')
+        # print(f'temp_ir_split:{temp_ir_split},inter_names_in_this_split:{inter_names_in_this_split}\n')
+        #get the shape of output
+        if output_name+'^' in output_list[0]:
+            # print(f'real output:{output_list}, temp_ir_split:{temp_ir_split}')
+            superscript_list= list(set(re.findall(rf'{output_name}({superscript_pattern})', temp_ir_split)))
+            subscript_list= find_subscripts_of_intermediate_vars(output_name, superscript_list[0], temp_ir_split)
+            output_shape_list, shape_correct=convert_shape(subscript_list, temp_ir_split, output_name, previous_ir, shape_correct, known_names, known_shapes)
+        # get the shapes of intermediate vars
+        for name in inter_names_in_this_split:
+            superscript_list= list(set(re.findall(rf'{name}({superscript_pattern})', temp_ir_split)))
+            subscript_list= find_subscripts_of_intermediate_vars(name, superscript_list[0], temp_ir_split)
+            # print(f'name: {name}, superscript_list: {superscript_list}, subscript_list: {subscript_list},temp_ir_split:{temp_ir_split}\n')
+            shape_list, shape_correct=convert_shape(subscript_list, temp_ir_split, name, previous_ir, shape_correct, known_names, known_shapes)
+            # print(f'shape_list: {shape_list}')
+            full_name=name+superscript_list[0]+subscript_list[0] if len(subscript_list)>0 else name+superscript_list[0]
+            temp_ir_split=update_ir_split(temp_ir_split, full_name)
+            dtype_and_cache_index=superscript_list[0].replace('{','').replace('}','').replace('^','').split(',')
+            dtype=convert_dtype([dtype_and_cache_index[0]])[0]
+            cache=convert_cache(dtype_and_cache_index[1])
+            # print(f'dtype: {dtype}, cache: {cache}')
+            new_key_dict={'shape': shape_list, 'dtype':dtype, 'cache_location': cache, 'update': True}
+            # print(f'new_key_dict:{new_key_dict}\n')
+            if name not in inter_dict.keys():
                 inter_dict[name]=new_key_dict
-    inter_string_list, inter_string_name, inter_string_shape=add_inter_allocation(inter_dict, tab_num, inter_names_in_this_split)
-    return inter_dict, inter_string_list, inter_string_name, inter_string_shape, shape_correct
+            else:
+                key_dict=inter_dict[name]
+                if shape_list!=key_dict['shape'] or dtype!=key_dict['dtype'] or cache!=key_dict['cache_location']:
+                    inter_dict[name]=new_key_dict
+            # print(f'inter_dict:{inter_dict}')
+    inter_string_list, inter_string_name, inter_string_shape=add_inter_allocation(inter_dict, tab_num, inter_names_in_whole_split)
+    return inter_dict, inter_string_list, inter_string_name, inter_string_shape, shape_correct, output_shape_list
+
 
 def check_repeated_inter(body_string, inter_name, inter_idx, inter_shape):
     if len(set(inter_name))< len(inter_name):
@@ -393,6 +580,18 @@ def check_repeated_inter(body_string, inter_name, inter_idx, inter_shape):
                     inter_shape.pop(remove_idx)
         # print(f'after body string:{body_string}')
     return body_string, inter_name, inter_idx, inter_shape
+
+def update_output_shape_list(output_shape_list, calculated_output_shape, shape_correct_total):
+    if len(output_shape_list)>0:
+        if len(calculated_output_shape)==0:
+            calculated_output_shape=output_shape_list
+        elif len(calculated_output_shape)==len(output_shape_list):
+            for i in range(len(output_shape_list)):
+                if calculated_output_shape[i]<output_shape_list[i]:
+                    calculated_output_shape[i]=output_shape_list[i]
+        else:
+            shape_correct_total=False
+    return calculated_output_shape, shape_correct_total
 
 def split_loops_into_value_and_index(loops_list):
     values_list = []
@@ -458,6 +657,7 @@ def generate_loop_string(values_list, keys_list, basic_loop_type_list, tab_num):
 
 def get_loops(ir, tab_num):
     loop_match = re.findall(rf'([^\[].*?)\[', ir)[0]
+    # print(f'loop_match:{loop_match}')
     ir_split = ir[len(loop_match):]
     values_list, keys_list, loop_type_list = split_loops_into_value_and_index([loop_match])
     # print(f'loop_match: {loop_match}\nvalues_list: {values_list}, keys_list: {keys_list}, loop_type_list: {loop_type_list}')
@@ -465,6 +665,14 @@ def get_loops(ir, tab_num):
     # print(f'basic_loop_type_list:{basic_loop_type_list}')
     loop_string, tab_num=generate_loop_string(values_list[0], keys_list[0], basic_loop_type_list, tab_num)
     return ir_split, loop_string, tab_num, loop_match
+
+def get_loops_correct(loop_match, tab_num):
+    values_list, keys_list, loop_type_list = split_loops_into_value_and_index([loop_match])
+    # print(f'loop_match: {loop_match}\nvalues_list: {values_list}, keys_list: {keys_list}, loop_type_list: {loop_type_list}')
+    basic_loop_type_list=distiguish_basic_loop_type(loop_type_list[0])
+    # print(f'basic_loop_type_list:{basic_loop_type_list}')
+    loop_string, tab_num=generate_loop_string(values_list[0], keys_list[0], basic_loop_type_list, tab_num)
+    return loop_string, tab_num
 
 def record_output(simplified_output, inter_dict, output_dict, known_names, known_shapes, known_dtype):
     if simplified_output in inter_dict.keys():
@@ -485,47 +693,6 @@ def judge_output_initialized(simplified_output, inter_dict, output_dict, input_k
             output_initialized=True
     return output_initialized
 
-# def get_compute(ir_split, inter_dict, output_dict, known_names, known_shapes, known_dtype, input_known_names):
-#     #four cases:
-#     #1. output is not in the right side
-#     #2. output is in the right side, but not related to previous eq:
-#     #2.1 reduction: with T.init():
-#     #2.2 prefix: output initialization is given before the loop.
-#     #3. output is in the right side, and related to previous eq.
-#     #3.1 reduction
-#     #3.2 prefix
-#     #4. align case.
-#     end_idx=ir_split.index(';')
-#     compute_ir=ir_split[:end_idx]
-#     new_ir_split=ir_split[end_idx+1:]
-#     split_compute_ir=compute_ir.split('=')
-#     output=split_compute_ir[0]
-#     right_eq='='.join(split_compute_ir[1:])
-#     if right_eq[:6]=='align(':
-#         print(f'output: {output}, right_eq: {right_eq}')
-#     else:
-#         simplified_output=re.findall(r'([A-Za-z]+)\^{', output)[0]
-#         #split the right eq
-#         right_input_list, split_eq, _=split_right_eq(right_eq)
-#         simplified_right_input_list=[re.findall(r'([A-Za-z]+)\^{', item)[0] for item in right_input_list]
-#         simplified_input_list=[item for item in simplified_right_input_list if item!=simplified_output]
-#         print(f'output: {output}, {simplified_output}, simplified_input_list: {simplified_input_list}, split_eq: {split_eq}')
-#         if len(simplified_input_list)<len(simplified_right_input_list):
-#             #case 2, 3
-#             # output_initialized=judge_output_initialized(simplified_output, inter_dict, output_dict, input_known_names)
-#             # print(f'output_initialized: {output_initialized}')
-#             if output in right_input_list and simplified_output in simplified_right_input_list:
-#                 #reduction
-#                 pass
-#             elif output not in right_input_list and simplified_output in simplified_right_input_list:
-#                 #prefix
-#                 pass
-#         else: #case 1
-#             pass
-#         #record in output_dict
-#         output_dict=record_output(simplified_output, inter_dict, output_dict, known_names, known_shapes, known_dtype)
-#         print(f'output_dict:{output_dict}')
-#     return new_ir_split
 
 def generate_body_inputoutput_subscript_info(simplified_output,output, simplified_right_input_list, split_eq, case1):
     reads_info, writes_info=[], []
@@ -688,7 +855,7 @@ def sub_distinguish_subscript_for_writing_and_reading(subscript, key, key_dict, 
             if key_dict[key][sub_idx]!=True and sub not in key_dict[key][sub_idx]:
                 key_dict[key][sub_idx].append(sub)
             single_sub=re.findall(r'[a-z]+', sub)
-            if len(single_sub)>1 or (len(single_sub)==1 and len(single_sub[0])<len(sub)):
+            if (len(single_sub)>1 or (len(single_sub)==1 and len(single_sub[0])<len(sub))) and 'bx' not in sub and 'by' not in sub and 'bz' not in sub:
                 if sub in index_comb_dict.keys():
                     index_comb_dict[sub]+=1
                 else:
@@ -715,49 +882,15 @@ def distinguish_subscript_for_writing_and_reading(reads_info, writes_info):
                     reads_input_dict, index_comb_dict, reads_writes_index=sub_distinguish_subscript_for_writing_and_reading(read_subscript, read_key, reads_input_dict, index_comb_dict, reads_writes_index)
     return list(set(reads_writes_index)), reads_input_dict, writes_output_dict, index_comb_dict
 
-def check_S_or_R(reads_writes_index, output):
+def check_S_or_R(reads_writes_index, output, reduction):
     reads_writes_property={}
     output_index=re.findall(r'[a-z]+', re.sub(r'[A-Za-z]+\^{.*?}', '', output))
     for index in reads_writes_index:
-        if index in output_index:
+        if index in output_index or not reduction:# or ('tx' in index or 'ty' in index or 'tz' in index or 'bx' in index or 'by' in index or 'bz' in index):
             reads_writes_property[index]='S'
         else:
             reads_writes_property[index]='R'
     return reads_writes_property
-
-# def check_spatial_reduce_remap(reads_input_dict, writes_output_dict, index_comb_dict, reads_writes_property):
-#     spatial_dict, reduce_dict, comb_replace_dict={}, {}, {}
-#     non_remap_list=[]
-#     read_subs=[sub for value in reads_input_dict.values() for sublist in value if sublist!=True for sub in sublist]
-#     write_subs=[sub for value in writes_output_dict.values() for sublist in value if sublist!=True for sub in sublist]
-#     for index_comb in index_comb_dict.keys():
-#         if index_comb_dict[index_comb]>1:
-#             all_single_index=re.findall(r'[a-z]+', index_comb)
-#             is_reduce, is_spatial=False, False
-#             for single_index in all_single_index:
-#                 if single_index not in read_subs+write_subs:
-#                     if reads_writes_property[single_index]=='R':
-#                         is_reduce, is_spatial=True, False
-#                     elif reads_writes_property[single_index]=='S':
-#                         is_reduce, is_spatial=False, True
-#             if is_reduce:
-#                 reduce_dict[index_comb]=['v_'+'_'.join(all_single_index)]
-#                 comb_replace_dict[index_comb]='v_'+'_'.join(all_single_index)
-#                 for single_index in all_single_index:
-#                     if single_index not in read_subs+write_subs:
-#                         non_remap_list.append(single_index)
-#             elif is_spatial:
-#                 spatial_dict[index_comb]=['v_'+'_'.join(all_single_index)]
-#                 comb_replace_dict[index_comb]='v_'+'_'.join(all_single_index)
-#                 for single_index in all_single_index:
-#                     if single_index not in read_subs+write_subs:
-#                         non_remap_list.append(single_index)
-#             elif not is_reduce and not is_spatial:
-#                 _, split_comb, lower_case_var_list=split_right_eq_TIR(index_comb)
-#                 var_info={lower_case_var_list[subspt_idx]: 'v_'+lower_case_var_list[subspt_idx] for subspt_idx in range(len(lower_case_var_list))}
-#                 replaced_split_comb=replace_item_in_list_using_dict(split_comb, var_info)
-#                 comb_replace_dict[index_comb]=''.join(replaced_split_comb)
-#     return spatial_dict, reduce_dict, list(set(non_remap_list)), comb_replace_dict
 
 def check_spatial_reduce_remap(reads_input_dict, writes_output_dict, index_comb_dict, reads_writes_property, single_index_in_split_eq):
     spatial_dict, reduce_dict, comb_replace_dict={}, {}, {}
@@ -891,10 +1024,10 @@ def generate_shape_remap_and_write_read_list(reads_writes_index, reads_writes_pr
     remap_list=generate_remap_list(reads_writes_index, reads_writes_property, non_remap_list)
     return reduce_dict, spatial_dict, remap_list, writes_list, reads_list
 
-def generate_write_read_list(single_index_in_split_eq, reads_writes_index,reads_input_dict,writes_output_dict,index_comb_dict,inter_dict,known_names,known_shapes, output):
+def generate_write_read_list(single_index_in_split_eq, reads_writes_index,reads_input_dict,writes_output_dict,index_comb_dict,inter_dict,known_names,known_shapes, output, reduction):
     all_index_list=list(set(single_index_in_split_eq + reads_writes_index))
     #check_S_or_R
-    reads_writes_property=check_S_or_R(all_index_list, output)
+    reads_writes_property=check_S_or_R(all_index_list, output, reduction)
     # print(f'reads_writes_property: {reads_writes_property}')
     #check spatial, reduce, remap
     spatial_dict, reduce_dict, non_remap_list, comb_replace_dict=check_spatial_reduce_remap(reads_input_dict, writes_output_dict, index_comb_dict, reads_writes_property, single_index_in_split_eq)
@@ -929,45 +1062,6 @@ def obtain_write_read_string(reduce_dict, spatial_dict, remap_list, writes_list,
         write_read_string+="\t"*temp_tab_num+'T.writes('+','.join(writes_list)+')\n'
     return write_read_string
 
-# def generate_index_in_split_eq(split_eq, index_comb_dict):
-#     add, start=False, False
-#     index_in_split_eq=[]
-#     single_index_in_split_eq=[]
-#     left_num, right_num=0, 0
-#     single_item=''
-#     for split_eq_item in split_eq:
-#         split_eq_item=split_eq_item.strip()
-#         if split_eq_item.islower() and split_eq_item.isalpha() and split_eq_item not in op_name:
-#             add, start=True, True
-#             if not add:
-#                 single_item=''
-#                 left_num, right_num=0, 0
-#             single_index_in_split_eq.append(split_eq_item)
-#         elif split_eq_item in cal_ops:
-#             add=True
-#         elif re.fullmatch(r'-?\d+(\.\d+)?', split_eq_item):
-#             add=True
-#         else:
-#             add, start=False, False
-#         # print(f'split_eq_item: {split_eq_item}, add: {add}, start: {start}, single_item:{single_item}')
-#         if add and start:
-#             single_item+=split_eq_item
-#             if split_eq_item=='(':
-#                 left_num += 1
-#             elif split_eq_item==')':
-#                 right_num += 1
-#         if left_num==right_num and not add and not start and single_item!='':
-#             if single_item not in single_index_in_split_eq:
-#                 index_in_split_eq.append(single_item)
-#                 if single_item in index_comb_dict.keys():
-#                     index_comb_dict[single_item]+=1
-#                 else:
-#                     index_comb_dict[single_item]=1
-#             single_item=''
-#     single_index_in_split_eq=list(set(single_index_in_split_eq))
-#     index_in_split_eq=list(set(index_in_split_eq))
-#     print(f'split_eq: {split_eq}, single_index_in_split_eq:{single_index_in_split_eq}, index_in_split_eq: {index_in_split_eq}, index_comb_dict:{index_comb_dict}')
-
 def generate_index_in_split_eq(split_eq):
     single_index_in_split_eq=[]
     for split_eq_item in split_eq:
@@ -977,11 +1071,11 @@ def generate_index_in_split_eq(split_eq):
     single_index_in_split_eq=list(set(single_index_in_split_eq))
     return single_index_in_split_eq
 
-def generate_write_read_string(split_eq, reads_info, writes_info, inter_dict, known_names, known_shapes, output, temp_tab_num):
+def generate_write_read_string(split_eq, reads_info, writes_info, inter_dict, known_names, known_shapes, output, temp_tab_num, reduction=False):
     reads_writes_index,reads_input_dict,writes_output_dict,index_comb_dict= distinguish_subscript_for_writing_and_reading(reads_info, writes_info)
     # print(f'reads_writes_index: {reads_writes_index}, reads_input_dict: {reads_input_dict}, writes_output_dict: {writes_output_dict}, index_comb_dict: {index_comb_dict}')
     single_index_in_split_eq=generate_index_in_split_eq(split_eq)
-    reduce_dict, spatial_dict, remap_list, writes_list, reads_list, comb_replace_dict=generate_write_read_list(single_index_in_split_eq, reads_writes_index,reads_input_dict,writes_output_dict,index_comb_dict,inter_dict,known_names,known_shapes,output)
+    reduce_dict, spatial_dict, remap_list, writes_list, reads_list, comb_replace_dict=generate_write_read_list(single_index_in_split_eq, reads_writes_index,reads_input_dict,writes_output_dict,index_comb_dict,inter_dict,known_names,known_shapes,output, reduction)
     # print(f'reads_list: {reads_list}, writes_list: {writes_list}\nreduce_dict: {reduce_dict}, spatial_dict: {spatial_dict}, remap_list: {remap_list}')
     write_read_string=obtain_write_read_string(reduce_dict, spatial_dict, remap_list, writes_list, reads_list, temp_tab_num)
     return write_read_string, comb_replace_dict
@@ -1184,39 +1278,6 @@ def generate_compute_string(output, split_eq, comb_replace_dict, simplified_outp
     compute_string+="\t"*temp_tab_num+compute_eq+'\n'
     return compute_string
 
-# def get_compute(ir_split, inter_dict, output_dict, known_names, known_shapes, known_dtype, input_known_names, temp_tab_num):
-#     end_idx=ir_split.index(';')
-#     compute_ir=ir_split[:end_idx]
-#     new_ir_split=ir_split[end_idx+1:]
-#     split_compute_ir=compute_ir.split('=')
-#     output=split_compute_ir[0]
-#     right_eq='='.join(split_compute_ir[1:])
-#     compute_string=""
-#     simplified_output=re.findall(r'([A-Za-z]+)\^{', output)[0]
-#     compute_string+="\t"*temp_tab_num+'with T.block(\"'+simplified_output+'\"):\n'
-#     temp_tab_num+=1
-#     #split the right eq
-#     right_input_list, split_eq, _=split_right_eq(right_eq)
-#     # print(f'right_input_list:{right_input_list}')
-#     simplified_right_input_list=list(set([reitem for item in right_input_list for reitem in re.findall(r'([A-Za-z]+)\^{', item)]))
-#     simplified_input_list=[item for item in simplified_right_input_list if item!=simplified_output]
-#     # print(f'output: {output}, {simplified_output}, simplified_right_input_list: {simplified_right_input_list}, split_eq: {split_eq}')
-#     if len(simplified_input_list)<len(simplified_right_input_list):
-#         output_initialized=judge_output_initialized(simplified_output, inter_dict, output_dict, input_known_names)
-#         # print(f'output_initialized: {output_initialized}')
-#         case1=False if output_initialized else True
-#     else: #case 1
-#         case1=True
-#     #record in output_dict
-#     output_dict=record_output(simplified_output, inter_dict, output_dict, known_names, known_shapes, known_dtype)
-#     # print(f'output_dict:{output_dict}')
-#     reads_info, writes_info = generate_body_inputoutput_subscript_info(simplified_output,output, simplified_right_input_list, split_eq, case1)
-#     # print(f'reads_info: {reads_info}, writes_info: {writes_info}')
-#     write_read_string, comb_replace_dict=generate_write_read_string(reads_info, writes_info, inter_dict, known_names, known_shapes, output, temp_tab_num)
-#     compute_string+=write_read_string
-#     expr_string=generate_compute_string(output, split_eq, comb_replace_dict, simplified_output, inter_dict, known_names, known_dtype, temp_tab_num)
-#     compute_string+=expr_string
-#     return new_ir_split, compute_string
 
 def get_compute(previous_ir, ir_split, inter_dict, output_dict, known_names, known_shapes, known_dtype, input_known_names, temp_tab_num):
     end_idx=ir_split.index(';')
@@ -1224,7 +1285,7 @@ def get_compute(previous_ir, ir_split, inter_dict, output_dict, known_names, kno
     new_ir_split=ir_split[end_idx+1:]
     split_compute_ir=compute_ir.split('=')
     output=split_compute_ir[0]
-    # print(f'output: {output}, compute_ir: {compute_ir}')
+    print(f'output: {output}, compute_ir: {compute_ir}')
     right_eq='='.join(split_compute_ir[1:])
     compute_string=""
     simplified_output=re.findall(r'([A-Za-z]+)\^{', output)[0]
@@ -1258,6 +1319,46 @@ def get_compute(previous_ir, ir_split, inter_dict, output_dict, known_names, kno
     compute_string+=expr_string
     return new_ir_split, compute_string, output_dict
 
+def get_compute_correct(previous_ir, compute_ir, inter_dict, output_dict, known_names, known_shapes, known_dtype, input_known_names, temp_tab_num):
+    split_compute_ir=compute_ir.split('=')
+    output=split_compute_ir[0]
+    # print(f'output: {output}, compute_ir: {compute_ir}')
+    right_eq='='.join(split_compute_ir[1:])
+    compute_string=""
+    simplified_output=re.findall(r'([A-Za-z]+)\^{', output)[0]
+    compute_string+="\t"*temp_tab_num+'with T.block(\"'+simplified_output+'\"):\n'
+    temp_tab_num+=1
+    #split the right eq
+    right_input_list, split_eq, _=split_right_eq_TIR(right_eq)
+    # print(f'here is the split_eq: {split_eq}')
+    # print(f'right_input_list:{right_input_list}')
+    # print(f'split_eq: {split_eq}')
+    simplified_right_input_list=list(set([reitem for item in right_input_list for reitem in re.findall(r'([A-Za-z]+)\^{', item)]))
+    simplified_input_list=[item for item in simplified_right_input_list if item!=simplified_output]
+    # print(f'output: {output}, simplified_output:{simplified_output}, simplified_right_input_list: {simplified_right_input_list}, split_eq: {split_eq}\n')
+    reduction=True if simplified_output in simplified_right_input_list else False
+    # print(f'reduction:{reduction}')
+    if len(simplified_input_list)<len(simplified_right_input_list):
+        output_initialized=judge_output_initialized(simplified_output, inter_dict, output_dict, input_known_names)
+        case1=False if output_initialized else True
+        init_info=check_if_reduction_or_prefix(output_initialized, previous_ir, simplified_output,output,right_input_list, split_eq)
+    else: #case 1
+        output_initialized=False
+        case1=True
+        init_info=[False, False, None, None, []]  # [is_reduction, is_prefix, init_value, output_location, prefix_index]
+    # print(f'case1:{case1}, output_initialized:{output_initialized}')
+    #record in output_dict
+    output_dict=record_output(simplified_output, inter_dict, output_dict, known_names, known_shapes, known_dtype)
+    # print(f'output_dict:{output_dict}')
+    reads_info, writes_info = generate_body_inputoutput_subscript_info(simplified_output,output, simplified_right_input_list, split_eq, case1)
+    # print(f'reads_info: {reads_info}, writes_info: {writes_info}')
+    write_read_string, comb_replace_dict=generate_write_read_string(split_eq, reads_info, writes_info, inter_dict, known_names, known_shapes, output, temp_tab_num, reduction)
+    # print(f'write_read_string:{write_read_string}')
+    compute_string+=write_read_string
+    expr_string=generate_compute_string(output, split_eq, comb_replace_dict, simplified_output, inter_dict, known_names, known_dtype, output_initialized, init_info, temp_tab_num)
+    compute_string+=expr_string
+    return compute_string, output_dict
+
 def select_shape(model_name):
     module = importlib.import_module("model_codes")
     set_default_shapes_ranges_and_dtypes = getattr(module, f"{model_name}_set_default_shapes_ranges_and_dtypes", None)
@@ -1272,6 +1373,8 @@ def obtain_real_inputs_for_verification(module, model_name, input_shapes, device
     for input_item in real_inputs_on_cpu:
         print(f'input_item:{type(input_item)}')
         if isinstance(input_item, torch.Tensor):
+            if torch.max(torch.abs(input_item))<10 and 0 not in input_item and input_item.numel()>1:
+                input_item=input_item*10
             input_item = input_item.to(device)
         elif isinstance(input_item, float):
             input_item = torch.tensor(input_item, dtype=dtype).to(device)
@@ -1297,21 +1400,69 @@ def generate_ctx_and_device(target):
         return ctx, device
     else:
         return tvm.cpu(), 'cpu'
+
+def _ctx_matches_torch_device(ctx, tensor):
+    if not isinstance(tensor, torch.Tensor):
+        return False
+    if tensor.device.type == 'cuda':
+        return ctx.device_type == tvm.cuda(0).device_type and ctx.device_id == (tensor.device.index or 0)
+    if tensor.device.type == 'cpu':
+        return ctx.device_type == tvm.cpu(0).device_type
+    return False
+
+def _torch_dtype_to_tvm_dtype(dtype):
+    return str(dtype).replace('torch.', '')
+
+def torch_tensor_to_tvm_ndarray(tensor, ctx):
+    tensor = tensor.detach()
+    if _ctx_matches_torch_device(ctx, tensor):
+        if not tensor.is_contiguous():
+            tensor = tensor.contiguous()
+        try:
+            return tvm.nd.from_dlpack(torch.utils.dlpack.to_dlpack(tensor))
+        except Exception:
+            pass
+    return tvm.nd.array(tensor.cpu().numpy(), ctx)
+
+def to_tvm_ndarray(value, ctx, dtype=None):
+    if isinstance(value, torch.Tensor):
+        return torch_tensor_to_tvm_ndarray(value, ctx)
+    if isinstance(value, np.ndarray):
+        return tvm.nd.array(value, ctx)
+    np_value = np.asarray(value, dtype=dtype)
+    return tvm.nd.array(np_value, ctx)
+
+def empty_tvm_output(output_shape, output_dtype, ctx):
+    tvm_dtype = _torch_dtype_to_tvm_dtype(output_dtype)
+    try:
+        return tvm.nd.empty(output_shape, dtype=tvm_dtype, device=ctx)
+    except TypeError:
+        return tvm.nd.empty(output_shape, dtype=tvm_dtype, ctx=ctx)
+
+def to_torch_tensor(value, device=None):
+    if isinstance(value, torch.Tensor):
+        tensor = value.detach()
+    elif isinstance(value, np.ndarray):
+        tensor = torch.from_numpy(value)
+    elif hasattr(value, "__dlpack__"):
+        try:
+            tensor = torch.utils.dlpack.from_dlpack(value)
+        except Exception:
+            tensor = torch.from_numpy(value.numpy())
+    else:
+        tensor = torch.as_tensor(value)
+    if device is not None and tensor.device != device:
+        tensor = tensor.to(device)
+    return tensor
     
+
 def generate_f_input_list(ctx, real_inputs,constant_params_value, output_shape, output_dtype):
     input_list=[]
     for input_tensor in real_inputs:
-        input_list.append(tvm.nd.array(input_tensor.detach().cpu().numpy(), ctx))
+        input_list.append(to_tvm_ndarray(input_tensor, ctx))
     for constant_value in constant_params_value:
-        if isinstance(constant_value, torch.Tensor):
-            input_list.append(tvm.nd.array(constant_value.detach().cpu().numpy(), ctx))
-        else:
-            input_list.append(tvm.nd.array(np.array(constant_value), ctx))
-    if 'float' in str(output_dtype):
-        output_placeholder=torch.randn(output_shape, dtype=output_dtype)
-    elif 'int' in str(output_dtype):
-        output_placeholder=torch.randint(0, 10, output_shape, dtype=output_dtype)
-    input_list.append(tvm.nd.array(output_placeholder.detach().cpu().numpy(), ctx))
+        input_list.append(to_tvm_ndarray(constant_value, ctx))
+    input_list.append(empty_tvm_output(output_shape, output_dtype, ctx))
     return input_list
 
 def check_if_two_outputs_equal(tvm_output, torch_output, atol=1e-3, rtol=0):
@@ -1520,11 +1671,25 @@ def mapping_params_to_new_model(new_model, params_value_dict):
             param.data.copy_(torch.tensor(value, dtype=param.dtype, device=param.device))
     return new_model
 
+
 def check_two_outputs_precision_error(tvm_output, torch_output):
-    torch_output_np = torch_output.cpu().detach().numpy()
-    effective_elem=1-((np.isnan(torch_output_np)*np.isnan(tvm_output))+(np.isinf(torch_output_np)*np.isinf(tvm_output)))
-    diff=np.abs(torch_output_np-tvm_output)
-    atol=np.max(diff*effective_elem)
-    rtol=np.max(diff*effective_elem/(np.abs(torch_output_np)+1e-8))
-    MSE=np.mean((torch_output_np-tvm_output)**2*effective_elem)
+    torch_output_tensor = to_torch_tensor(torch_output).to(torch.float64)
+    tvm_output_tensor = to_torch_tensor(tvm_output, device=torch_output_tensor.device).to(torch.float64)
+    if torch_output_tensor.shape != tvm_output_tensor.shape:
+        raise ValueError(f"Output shape mismatch: torch={tuple(torch_output_tensor.shape)}, tvm={tuple(tvm_output_tensor.shape)}")
+
+    same_nan = torch.isnan(torch_output_tensor) & torch.isnan(tvm_output_tensor)
+    same_posinf = torch.isposinf(torch_output_tensor) & torch.isposinf(tvm_output_tensor)
+    same_neginf = torch.isneginf(torch_output_tensor) & torch.isneginf(tvm_output_tensor)
+    valid_mask = ~(same_nan | same_posinf | same_neginf)
+
+    if not torch.any(valid_mask):
+        return 0.0, 0.0, 0.0
+
+    diff = torch.abs(torch_output_tensor - tvm_output_tensor)
+    valid_diff = diff[valid_mask]
+    valid_ref = torch.abs(torch_output_tensor[valid_mask])
+    atol = valid_diff.max().item()
+    rtol = (valid_diff / (valid_ref + 1e-8)).max().item()
+    MSE = valid_diff.square().mean().item()
     return atol, rtol, MSE
