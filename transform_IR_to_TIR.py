@@ -115,15 +115,6 @@ if __name__ == '__main__':
             # torch.cuda.empty_cache()
             # torch.cuda.reset_peak_memory_stats()
 
-
-        # # # start verification for transformed IR
-        # transformed_IR='B^{128}_{tx=0}L^{128}_{a=0}L^{64}_{c=0}[D^{f64,g}_{tx,a}=D^{f64,g}_{tx,a}+A^{f64,g}_{tx,c}*M^{f64,g}_{a,c};];B^{128}_{tx=0}L^{128}_{a=0}[D^{f64,g}_{tx,a}=D^{f64,g}_{tx,a}+N^{f64,g}_{a};];B^{128}_{tx=0}L^{128}_{a=0}[E^{f64,g}_{tx,a,0}=D^{f64,g}_{tx,a};];B^{128}_{tx=0}L^{128}_{a=0}L^{1}_{c=0}[F^{f64,g}_{tx,a,c,0}=E^{f64,g}_{tx,a,c};];L^{128}_{a=0}L^{128}_{c=0}L^{1}_{d=0}B^{1}_{tx=0}[G^{f64,g}_{a,c,d,tx}=F^{f64,g}_{a,c,d,tx};];L^{128}_{a=0}L^{128}_{c=0}L^{1}_{d=0}B^{1}_{tx=0}[G^{f64,g}_{a,c,d,tx+1}=F^{f64,g}_{a,c,d,tx};];B^{128}_{tx=0}L^{128}_{a=0}L^{1}_{c=0}L^{2}_{d=0}[R^{f64,g}_{tx,a}=R^{f64,g}_{tx,a}+G^{f64,g}_{tx,a,c,d};];B^{128}_{tx=0}L^{128}_{a=0}[S^{f64,g}_{tx,a}=R^{f64,g}_{tx,a}/2;];B^{128}_{tx=0}L^{128}_{a=0}L^{1}_{c=0}L^{2}_{d=0}[W^{f64,g}_{tx,a}=W^{f64,g}_{tx,a}+(G^{f64,g}_{tx,a,c,d}-S^{f64,g}_{tx,a})**2;];B^{128}_{tx=0}L^{128}_{a=0}[X^{f64,g}_{tx,a}=W^{f64,g}_{tx,a}/2;];B^{128}_{tx=0}L^{128}_{a=0}L^{1}_{c=0}L^{2}_{d=0}[Y^{f64,g}_{tx,a,c,d}=(G^{f64,g}_{tx,a,c,d}-S^{f64,g}_{tx,a})/sqrt(X^{f64,g}_{tx,a}+1e-05);];B^{128}_{tx=0}L^{128}_{a=0}L^{1}_{c=0}L^{2}_{d=0}[H^{f64,g}_{tx,a,c,d}=(O^{f64,g}_{a}/(Y^{f64,g}_{tx,a,c,d}+1e-3)*(Y^{f64,g}_{tx,a,c,d})+1e-3)*Y^{f64,g}_{tx,a,c,d}+Q^{f64,g}_{a};];B^{128}_{tx=0}L^{128}_{a=0}L^{2}_{c=0}[I^{f64,g}_{tx,a,c}=H^{f64,g}_{tx,a,0,c};];B^{128}_{tx=0}L^{128}_{a=0}L^{2}_{c=0}[J^{f64,g}_{tx,a,c}=I^{f64,g}_{tx,a,c}+C^{f64,g}_{tx,a,c};];B^{128}_{tx=0}L^{128}_{a=0}L^{2}_{c=0}[K^{f64,g}_{tx,a,c}=J^{f64,g}_{tx,a,c}*C^{f64,g}_{tx,a,c};];'
-        # f,_, _=build_tir_module(transformed_IR, known_names, known_shapes, known_dtype, input_known_names, target)
-        # is_equal=verification(f, model, model_name, module, input_shapes, outputs_info[1][0], outputs_info[2][0], target, constant_params_value, atol,rtol, dtype)
-        # if is_equal:
-        #     print(f"Processed model {model_index}/{len(model_names)}: {model_name} successfully.")
-        # else:
-        #     print(f"Processed model {model_index}/{len(model_names)}: {model_name} failed.")
         logging.basicConfig(filename=log_name, level=logging.INFO)
         logging.info(f'applied_model_indices: {applied_model_indices}')
         print(f'len:{len(applied_model_indices)}, applied_model_indices: {applied_model_indices}')
