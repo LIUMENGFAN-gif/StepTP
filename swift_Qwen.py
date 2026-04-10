@@ -12,8 +12,6 @@ import argparse
 
     
 if __name__ == '__main__':
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1,2"
-    torch.cuda.synchronize()
     parser = argparse.ArgumentParser(description="Process model transformations")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=1)
@@ -26,13 +24,20 @@ if __name__ == '__main__':
     parser.add_argument('--logging_steps', type=int, default=5)
     parser.add_argument('--max_length', type=int, default=10240)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=16)
+    parser.add_argument('--model_id_or_path', type=str, default='../nfs_folder/LLM/Qwen3-8B')
+    parser.add_argument('--output_dir', type=str, default='../nfs_folder/training/sft_8B_CoT_filtered')
+    parser.add_argument('--train_dataset', type=str, default='dataset/train_dataset_with_CoT_in_chattemplate.jsonl')
+    parser.add_argument('--cuda_visible_devices', type=str, default='1,2')
+    parser.add_argument('--num_proc', type=int, default=4)
     args = parser.parse_args()
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.cuda_visible_devices
+    torch.cuda.synchronize()
     logger = get_logger()
     seed_everything(42)
     system = 'You are a helpful assistant.'
-    output_dir="../nfs_folder/training/sft_8B_CoT_filtered"
+    output_dir=args.output_dir
     max_length=args.max_length
-    model_id_or_path='../nfs_folder/LLM/Qwen3-8B'
+    model_id_or_path=args.model_id_or_path
     # output_dir="../nfs_folder/training/sft_32B_CoT_filtered"
     # max_length=args.max_length
     # model_id_or_path='../nfs_folder/LLM/Qwen3-32B'
@@ -82,9 +87,8 @@ if __name__ == '__main__':
     model_parameter_info = get_model_parameter_info(model)
     logger.info(f'model_parameter_info: {model_parameter_info}')
 
-    #download dataset
-    train_dataset, _ = load_dataset("../nfs_folder/data_entries/train_dataset_with_CoT_in_chattemplate.jsonl", num_proc=4,seed=42)
-    train_dataset = EncodePreprocessor(template=template)(train_dataset, num_proc=4)
+    train_dataset, _ = load_dataset(args.train_dataset, num_proc=args.num_proc, seed=42)
+    train_dataset = EncodePreprocessor(template=template)(train_dataset, num_proc=args.num_proc)
     print(f'len(train_dataset):{len(train_dataset)}')
 
 
