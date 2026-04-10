@@ -3112,9 +3112,12 @@ def apply_trig_expand_to_IR(IR, input_output_name, name_start_idx, row_equations
     trig_expand_index_list = judge_trig_expand_condition(simplified_eqs_under_loops,simplified_eq_outputs_under_loops, simplified_eq_inputs_under_loops)
     has_transformation = False
     transformed_IR_list = []
+    original_IR_list = []
+    two_step_trig_expand_original_IR_list = []
+    three_step_trig_expand_original_IR_list = []
     two_step_trig_expand_transformed_IR_list=[]
     three_step_trig_expand_transformed_IR_list = []
-    has_transformation, transformed_IR_list=apply_sympy_to_IR(trig_expand_index_list,has_transformation, transformed_IR_list, loops, row_equations_under_loops, equations_under_loops, simplified_eq_inputs_under_loops, eq_inputs_under_loops)
+    has_transformation, original_IR_list, transformed_IR_list=apply_sympy_to_IR(IR, trig_expand_index_list,has_transformation, original_IR_list, transformed_IR_list, loops, row_equations_under_loops, equations_under_loops, simplified_eq_inputs_under_loops, eq_inputs_under_loops)
     _,one_step_transformed_IR_list,_=apply_compute_inline_to_IR(IR, input_output_name, name_start_idx, row_equations_under_loops, loops, equations_under_loops, eq_outputs_under_loops, eq_inputs_under_loops, simplified_eqs_under_loops, simplified_eq_outputs_under_loops, simplified_eq_inputs_under_loops)
     # print(f'one_step_transformed_IR_list:{one_step_transformed_IR_list}')
     for one_step_transformed_IR_idx in range(len(one_step_transformed_IR_list)):
@@ -3129,10 +3132,10 @@ def apply_trig_expand_to_IR(IR, input_output_name, name_start_idx, row_equations
             # print(f'two_step_transformed_IR: {two_step_transformed_IR}')
             two_step_row_equations_under_loops, two_step_loops, two_step_equations_under_loops, two_step_eq_outputs_under_loops,two_step_eq_inputs_under_loops, two_step_simplified_eqs_under_loops, two_step_simplified_eq_outputs_under_loops, two_step_simplified_eq_inputs_under_loops = split_IR_to_equations(two_step_transformed_IR)
             two_step_trig_expand_index_list = judge_trig_expand_condition(two_step_simplified_eqs_under_loops, two_step_simplified_eq_outputs_under_loops, two_step_simplified_eq_inputs_under_loops)
-            has_transformation, three_step_trig_expand_transformed_IR_list=apply_sympy_to_IR(two_step_trig_expand_index_list,has_transformation,three_step_trig_expand_transformed_IR_list, two_step_loops, two_step_row_equations_under_loops, two_step_equations_under_loops, two_step_simplified_eq_inputs_under_loops, two_step_eq_inputs_under_loops)
+            has_transformation, three_step_trig_expand_original_IR_list, three_step_trig_expand_transformed_IR_list=apply_sympy_to_IR(two_step_transformed_IR, two_step_trig_expand_index_list,has_transformation,three_step_trig_expand_original_IR_list, three_step_trig_expand_transformed_IR_list, two_step_loops, two_step_row_equations_under_loops, two_step_equations_under_loops, two_step_simplified_eq_inputs_under_loops, two_step_eq_inputs_under_loops)
         one_step_trig_expand_index_list = judge_trig_expand_condition(one_step_simplified_eqs_under_loops, one_step_simplified_eq_outputs_under_loops, one_step_simplified_eq_inputs_under_loops)
-        has_transformation, two_step_trig_expand_transformed_IR_list=apply_sympy_to_IR(one_step_trig_expand_index_list, has_transformation, two_step_trig_expand_transformed_IR_list, one_step_loops, one_step_row_equations_under_loops, one_step_equations_under_loops, one_step_simplified_eq_inputs_under_loops, one_step_eq_inputs_under_loops)
-    return [IR], list(set(transformed_IR_list+two_step_trig_expand_transformed_IR_list+three_step_trig_expand_transformed_IR_list)), has_transformation
+        has_transformation, two_step_trig_expand_original_IR_list, two_step_trig_expand_transformed_IR_list=apply_sympy_to_IR(one_step_transformed_IR, one_step_trig_expand_index_list, has_transformation, two_step_trig_expand_original_IR_list, two_step_trig_expand_transformed_IR_list, one_step_loops, one_step_row_equations_under_loops, one_step_equations_under_loops, one_step_simplified_eq_inputs_under_loops, one_step_eq_inputs_under_loops)
+    return original_IR_list + two_step_trig_expand_original_IR_list + three_step_trig_expand_original_IR_list, list(set(transformed_IR_list+two_step_trig_expand_transformed_IR_list+three_step_trig_expand_transformed_IR_list)), has_transformation
 
 def apply_powsimp_to_IR(IR, input_output_name, name_start_idx, row_equations_under_loops, loops, equations_under_loops, eq_outputs_under_loops, eq_inputs_under_loops, simplified_eqs_under_loops, simplified_eq_outputs_under_loops, simplified_eq_inputs_under_loops):
     powsimp_index_list = judge_powsimp_condition(simplified_eqs_under_loops,simplified_eq_outputs_under_loops, simplified_eq_inputs_under_loops)
